@@ -1,0 +1,12 @@
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+.editorconfig
+
+### VS Code ###
+.vscode/
+
+*.db
+*.exe
