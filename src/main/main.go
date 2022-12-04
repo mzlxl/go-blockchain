@@ -1,6 +1,6 @@
 package main
 
-import "go-block-chain/src/core"
+import "go-blockchain/src/core"
 
 // 参考实现： https://learnblockchain.cn/article/586
 func main() {

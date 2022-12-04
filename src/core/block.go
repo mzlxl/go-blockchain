@@ -60,7 +60,7 @@ func DeserializeBlock(data []byte) *Block {
 
 	// 反序列化到block
 	var block Block
-	err := decoder.Decode(block)
+	err := decoder.Decode(&block)
 	if err != nil {
 		log.Panic(err)
 	}
