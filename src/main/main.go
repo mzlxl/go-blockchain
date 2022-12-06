@@ -19,7 +19,7 @@ func main() {
 	//}
 
 	// 通过命令行方式添加区块
-	bc := core.NewBlockchain()
+	bc := core.NewBlockchain("start")
 
 	// defer用来声明一个延迟函数，把这个函数放入到一个栈上，当外部的包含方法return之前调用
 	defer bc.Db.Close()

@@ -10,19 +10,19 @@ import (
 type Block struct {
 	// 创建时间戳
 	Timestamp int64
-	// 区块数据
-	Data []byte
+	// 区块数据（这里指的是交易信息）
+	Transactions []*Transaction
 	// 前一个区块hash
 	PreHash []byte
 	// 当前区块hash，用于校验区块数据有效性
 	Hash []byte
-
+	// 工作量
 	Nonce int
 }
 
 // 创建block
-func NewBlock(data string, preHash []byte) *Block {
-	block := &Block{time.Now().Unix(), []byte(data), preHash, []byte{}, 0}
+func NewBlock(transactions []*Transaction, preHash []byte) *Block {
+	block := &Block{time.Now().Unix(), transactions, preHash, []byte{}, 0}
 
 	// 挖矿过程，计算一个特殊的满足要求的数值
 	pow := NewProofOfWork(block)
@@ -34,8 +34,8 @@ func NewBlock(data string, preHash []byte) *Block {
 }
 
 // 创世纪区块
-func NewGenesisBlock() *Block {
-	return NewBlock("Genesis Block", []byte{})
+func NewGenesisBlock(coinbase *Transaction) *Block {
+	return NewBlock([]*Transaction{coinbase}, []byte{})
 }
 
 // block序列化
@@ -65,4 +65,18 @@ func DeserializeBlock(data []byte) *Block {
 		log.Panic(err)
 	}
 	return &block
+}
+
+// 序列化交易列表
+func (block *Block) SerializeTransactions() []byte {
+	// 定义一个 buffer 存储序列化之后的数据
+	var result bytes.Buffer
+	encoder := gob.NewEncoder(&result)
+
+	// 序列化区块到buffer中
+	err := encoder.Encode(block.Transactions)
+	if err != nil {
+		log.Panic(err)
+	}
+	return result.Bytes()
 }

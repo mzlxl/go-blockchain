@@ -44,7 +44,10 @@ func (cli *CLI) Run() {
 			addBlockCmd.Usage()
 			os.Exit(1)
 		}
-		cli.addBlock(*addBlockData)
+		transactions := []*Transaction{
+			&Transaction{nil, []TXInput{}, []TXOutput{}},
+		}
+		cli.addBlock(transactions)
 	}
 
 	if printChainCmd.Parsed() {
@@ -68,9 +71,8 @@ func (cli *CLI) printUsage() {
 }
 
 // 添加区块
-func (cli *CLI) addBlock(data string) {
-	cli.bc.AddBlock(data)
-	fmt.Println("add block success: ", data)
+func (cli *CLI) addBlock(transactions []*Transaction) {
+	cli.bc.AddBlock(transactions)
 }
 
 // 通过迭代方式打印链条
@@ -81,7 +83,7 @@ func (cli *CLI) printChain() {
 		block := bci.Next()
 
 		fmt.Printf("Prev. hash: %x\n", block.PreHash)
-		fmt.Printf("Data: %s\n", block.Data)
+		fmt.Printf("Transactions: %s\n", block.Transactions)
 		fmt.Printf("Hash: %x\n", block.Hash)
 		pow := NewProofOfWork(block)
 		fmt.Printf("PoW: %s\n", strconv.FormatBool(pow.Validate()))

@@ -36,7 +36,7 @@ func (pow *ProofOfWork) Run() (int, []byte) {
 	var hashInt big.Int
 	var hash [32]byte
 	nonce := 0
-	fmt.Printf("proof of work run,block will contains data:%s\n", pow.block.Data)
+	fmt.Printf("proof of work run,block will contains transactions:%s\n", pow.block.Transactions)
 
 	for nonce < maxNonce {
 		data := pow.prepareData(nonce)
@@ -60,7 +60,7 @@ func (pow *ProofOfWork) prepareData(nonce int) []byte {
 	data := bytes.Join(
 		[][]byte{
 			pow.block.PreHash,
-			pow.block.Data,
+			pow.block.SerializeTransactions(),
 			Int2Hex(pow.block.Timestamp),
 			Int2Hex(int64(targetBits)),
 			Int2Hex(int64(nonce)),
