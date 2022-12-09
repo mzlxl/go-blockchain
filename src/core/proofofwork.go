@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 	"log"
 	"math"
 	"math/big"
@@ -36,13 +35,12 @@ func (pow *ProofOfWork) Run() (int, []byte) {
 	var hashInt big.Int
 	var hash [32]byte
 	nonce := 0
-	fmt.Printf("proof of work run,block will contains transactions:%s\n", pow.block.Transactions)
 
 	for nonce < maxNonce {
 		data := pow.prepareData(nonce)
 		hash = sha256.Sum256(data)
 		hashInt.SetBytes(hash[:])
-		fmt.Printf("generate hash: %x  nonce:%d\n", hash, nonce)
+		//fmt.Printf("generate hash: %x  nonce:%d\n", hash, nonce)
 
 		// 比较hash，小于目标值
 		if hashInt.Cmp(pow.target) == -1 {
@@ -60,7 +58,7 @@ func (pow *ProofOfWork) prepareData(nonce int) []byte {
 	data := bytes.Join(
 		[][]byte{
 			pow.block.PreHash,
-			pow.block.SerializeTransactions(),
+			pow.block.HashTransactions(),
 			Int2Hex(pow.block.Timestamp),
 			Int2Hex(int64(targetBits)),
 			Int2Hex(int64(nonce)),
