@@ -15,8 +15,11 @@ func (cli *CLI) Run() {
 	cli.validateArgs()
 
 	// 使用标准库里面的 flag 包来解析命令行参数
+	cleanCmd := flag.NewFlagSet("clean", flag.ExitOnError)
 	createChainCmd := flag.NewFlagSet("createchain", flag.ExitOnError)
 	printChainCmd := flag.NewFlagSet("printchain", flag.ExitOnError)
+	createWalletCmd := flag.NewFlagSet("createwallet", flag.ExitOnError)
+	listAddrCmd := flag.NewFlagSet("listaddr", flag.ExitOnError)
 	transferCmd := flag.NewFlagSet("transfer", flag.ExitOnError)
 	balanceCmd := flag.NewFlagSet("balance", flag.ExitOnError)
 
@@ -29,10 +32,22 @@ func (cli *CLI) Run() {
 
 	// 命令解析
 	switch os.Args[1] {
+	case "clean":
+		_ = cleanCmd.Parse(os.Args[2:])
 	case "createchain":
 		_ = createChainCmd.Parse(os.Args[2:])
 	case "printchain":
 		_ = printChainCmd.Parse(os.Args[2:])
+	case "createwallet":
+		err := createWalletCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
+	case "listaddr":
+		err := listAddrCmd.Parse(os.Args[2:])
+		if err != nil {
+			log.Panic(err)
+		}
 	case "transfer":
 		_ = transferCmd.Parse(os.Args[2:])
 	case "balance":
@@ -43,6 +58,9 @@ func (cli *CLI) Run() {
 	}
 
 	// 解析相关并执行命令
+	if cleanCmd.Parsed() {
+		cli.cleanEnv()
+	}
 	if createChainCmd.Parsed() {
 		if *createChainAddress == "" {
 			createChainCmd.Usage()
@@ -53,6 +71,14 @@ func (cli *CLI) Run() {
 
 	if printChainCmd.Parsed() {
 		cli.printChain()
+	}
+
+	if createWalletCmd.Parsed() {
+		cli.createWallet()
+	}
+
+	if listAddrCmd.Parsed() {
+		cli.listaddr()
 	}
 
 	if transferCmd.Parsed() {
@@ -83,20 +109,33 @@ func (cli *CLI) validateArgs() {
 // 使用说明
 func (cli *CLI) printUsage() {
 	log.Println("Usage:")
+	log.Println("	clean - clean env")
 	log.Println("	createchain -address address - init block chain")
 	log.Println("	printchain - print all blocks of the blockchain")
+	log.Println("	createwallet - generates a new key-pair and saves it into the wallet file")
+	log.Println("	listaddr - lists all addresses from the wallet file")
 	log.Println("	transfer -form tom -to jerry -amount 1 - tom transfers 1 coin to jerry")
 	log.Println("	balance -address address - print balance of address")
 }
 
+func (cli *CLI) cleanEnv() {
+	os.Remove(dbFile)
+	os.Remove(dbFile + ".lock")
+	os.Remove(walletFile)
+	fmt.Println("Clean Done!")
+}
+
 // 创建并获取链
 func (cli *CLI) createBlockchain(address string) {
-	// 校验钱包
-	//if !ValidateAddress(address) {
-	//	log.Panic("ERROR: Address is not valid")
-	//}
+	if !ValidateAddress(address) {
+		log.Panic("ERROR: Address is not valid")
+	}
+
 	bc := NewBlockchain(address)
 	defer bc.Db.Close()
+
+	UTXOSet := UTXOSet{bc}
+	UTXOSet.Reindex()
 	fmt.Println("createBlockchain Done!")
 }
 
@@ -122,31 +161,75 @@ func (cli *CLI) printChain() {
 	}
 }
 
+// 创建钱包
+func (cli *CLI) createWallet() {
+	wallets, _ := NewWallets()
+	address := wallets.CreateWallet()
+	wallets.SaveToFile()
+
+	fmt.Printf("Your new address: %s\n", address)
+}
+
+// 打印地址
+func (cli *CLI) listaddr() {
+	wallets, err := NewWallets()
+	if err != nil {
+		log.Panic(err)
+	}
+	addresses := wallets.GetAddresses()
+
+	for _, address := range addresses {
+		fmt.Println(address)
+	}
+}
+
 // 转账
 func (cli *CLI) transfer(from, to string, amount int) {
+	if !ValidateAddress(from) {
+		log.Panic("ERROR: Sender address is not valid")
+	}
+	if !ValidateAddress(to) {
+		log.Panic("ERROR: Recipient address is not valid")
+	}
+
 	bc := GetBlockchain()
+	UTXOSet := UTXOSet{bc}
 	defer bc.Db.Close()
 
-	tx := NewTransaction(from, to, amount, bc)
-	bc.AddBlock([]*Transaction{tx})
+	wallets, err := NewWallets()
+	if err != nil {
+		log.Panic(err)
+	}
+
+	wallet := wallets.GetWallet(from)
+	tx := NewTransaction(&wallet, to, amount, &UTXOSet)
+
+	cbTx := NewRewardTX(from, "")
+	txs := []*Transaction{cbTx, tx}
+
+	newBlock := bc.AddBlock(txs)
+	UTXOSet.Update(newBlock)
 	fmt.Printf("%s transfers %d coin to %s\n", from, amount, to)
 }
 
 // 获取余额
-func (cli *CLI) getBalance(address string) int {
-	bc := GetBlockchain()
-	defer bc.Db.Close()
-	unspentTransactions := bc.FindUnspentTransactions(address)
-	accumulated := 0
+func (cli *CLI) getBalance(address string) {
 
-	// 迭代未护花费的，将属于我的余额（CanBeUnlockedWith）进行余额累加，
-	for _, tx := range unspentTransactions {
-		for _, out := range tx.Vout {
-			if out.CanBeUnlockedWith(address) {
-				accumulated += out.Value
-			}
-		}
+	if !ValidateAddress(address) {
+		log.Panic("ERROR: Address is not valid")
 	}
-	fmt.Printf("balance of %s:%d\n", address, accumulated)
-	return accumulated
+	bc := GetBlockchain()
+	UTXOSet := UTXOSet{bc}
+	defer bc.Db.Close()
+
+	balance := 0
+	pubKeyHash := Base58Decode([]byte(address))
+	pubKeyHash = pubKeyHash[1 : len(pubKeyHash)-4]
+	UTXOs := UTXOSet.FindUTXO(pubKeyHash)
+
+	for _, out := range UTXOs {
+		balance += out.Value
+	}
+
+	fmt.Printf("Balance of '%s': %d\n", address, balance)
 }

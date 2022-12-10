@@ -1,7 +1,10 @@
 package core
 
 import (
+	"bytes"
+	"crypto/ecdsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/boltdb/bolt"
 	"log"
@@ -13,6 +16,7 @@ const blocksBucket = "blocks"
 const genesisData = "genesis"
 
 // 挖出新块的奖励金。在比特币中，实际并没有存储这个数字，而是基于区块总数进行计算而得
+// 挖出创世块的奖励是 50 BTC，每挖出 210000 个块后，奖励减半
 const subsidy = 10
 
 type Blockchain struct {
@@ -24,10 +28,37 @@ type Blockchain struct {
 }
 
 // 添加数据到链条
-func (bc *Blockchain) AddBlock(transactions []*Transaction) {
+func (bc *Blockchain) AddBlock(transactions []*Transaction) *Block {
+
+	for _, tx := range transactions {
+		if bc.VerifyTransaction(tx) != true {
+			log.Panic("ERROR: Invalid transaction")
+		}
+	}
+
 	lastHash := bc.getLastHash()
 	newBlock := NewBlock(transactions, lastHash)
 	bc.putBlock2Db(newBlock)
+	return newBlock
+}
+
+// VerifyTransaction verifies transaction input signatures
+func (bc *Blockchain) VerifyTransaction(tx *Transaction) bool {
+	if tx.IsRewardTx() {
+		return true
+	}
+
+	prevTXs := make(map[string]Transaction)
+
+	for _, vin := range tx.Vin {
+		prevTX, err := bc.FindTransaction(vin.Txid)
+		if err != nil {
+			log.Panic(err)
+		}
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	return tx.Verify(prevTXs)
 }
 
 // 获取数据库中最后一个区块的hash
@@ -68,7 +99,7 @@ func NewBlockchain(address string) *Blockchain {
 
 		if b == nil {
 			// 创建存储区块的bucket，并将创世块保存进去
-			gtx := NewGenesisTX(address, genesisData)
+			gtx := NewRewardTX(address, genesisData)
 			genesis := NewGenesisBlock(gtx)
 			b, _ := tx.CreateBucket([]byte(blocksBucket))
 			_ = b.Put(genesis.Hash, genesis.SerializeBlock())
@@ -119,58 +150,9 @@ func dbExists(dbFile string) bool {
 	return true
 }
 
-// 在区块链的最初，也就是第一个块，叫做创世块。正是这个创世块，产生了区块链最开始的输出。
-//对于创世块，不需要引用之前的交易输出。因为在创世块之前根本不存在交易，也就没有不存在交易输出
-func NewGenesisTX(to, data string) *Transaction {
-	if data == "" {
-		data = fmt.Sprintf("Reward to '%s'", to)
-	}
-
-	// 创世块只有一个输出，Txid 为空数组，Vout 等于 -1
-	// 交易也没有在 ScriptSig 中存储脚本，而只是存储了一个任意的字符串 data
-	txin := TXInput{[]byte{}, -1, data}
-
-	// 输出为挖矿奖励subsidy
-	txout := TXOutput{subsidy, to}
-	tx := Transaction{nil, []TXInput{txin}, []TXOutput{txout}}
-	tx.SetID()
-	return &tx
-}
-
-// 这个方法对所有的未花费交易进行迭代，并对它的值进行累加。
-//当累加值大于或等于我们想要传送的值时，它就会停止并返回累加值，同时返回的还有通过交易 ID 进行分组的输出索引。
-func (bc *Blockchain) FindSpendableOutputs(address string, amount int) (int, map[string][]int) {
-	unspentOutputs := make(map[string][]int)
-	unspentTXs := bc.FindUnspentTransactions(address)
-	accumulated := 0
-
-Work:
-	// 迭代未护花费的，将属于我的余额（CanBeUnlockedWith）进行余额累加，
-	for _, tx := range unspentTXs {
-		txID := hex.EncodeToString(tx.ID)
-
-		for outIdx, out := range tx.Vout {
-			// 判断这笔交易是否属于我的&累加值未达到需要花费的值
-			if out.CanBeUnlockedWith(address) && accumulated < amount {
-				accumulated += out.Value
-
-				// 将输出添加到末尾，key:交易ID  value:输出集合
-				unspentOutputs[txID] = append(unspentOutputs[txID], outIdx)
-
-				// 当累加值大于或等于我们想要传送的值时,我们只需取出足够支付的钱就够了
-				if accumulated >= amount {
-					break Work
-				}
-			}
-		}
-	}
-
-	return accumulated, unspentOutputs
-}
-
-// 找到没有花费的交易
-func (bc *Blockchain) FindUnspentTransactions(address string) []Transaction {
-	var unspentTXs []Transaction
+// FindUTXO finds all unspent transaction outputs and returns transactions with spent outputs removed
+func (bc *Blockchain) FindUTXO() map[string]TXOutputs {
+	UTXO := make(map[string]TXOutputs)
 	spentTXOs := make(map[string][]int)
 	bci := bc.Iterator()
 
@@ -182,30 +164,24 @@ func (bc *Blockchain) FindUnspentTransactions(address string) []Transaction {
 
 		Outputs:
 			for outIdx, out := range tx.Vout {
-				// 判断输出是不是在输入的集合spentTXOs里面，如果在直接排除，continue Outputs
+				// Was the output spent?
 				if spentTXOs[txID] != nil {
-					for _, spentOut := range spentTXOs[txID] {
-						if spentOut == outIdx {
+					for _, spentOutIdx := range spentTXOs[txID] {
+						if spentOutIdx == outIdx {
 							continue Outputs
 						}
 					}
 				}
 
-				// 没花过，则记录到没花费的集合unspentTXs
-				if out.CanBeUnlockedWith(address) {
-					unspentTXs = append(unspentTXs, *tx)
-				}
+				outs := UTXO[txID]
+				outs.Outputs = append(outs.Outputs, out)
+				UTXO[txID] = outs
 			}
 
-			// 获取未花费的交易思路：找到所有输入spentTXOs，然后排除掉spentTXOs，剩下的就是没有花的
 			if tx.IsRewardTx() == false {
-				// 如果是普通交易，找到其所有输入
 				for _, in := range tx.Vin {
-					// 判断输入属于我，就记录到spentTXOs中
-					if in.CanUnlockOutputWith(address) {
-						inTxID := hex.EncodeToString(in.Txid)
-						spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Vout)
-					}
+					inTxID := hex.EncodeToString(in.Txid)
+					spentTXOs[inTxID] = append(spentTXOs[inTxID], in.Vout)
 				}
 			}
 		}
@@ -215,5 +191,41 @@ func (bc *Blockchain) FindUnspentTransactions(address string) []Transaction {
 		}
 	}
 
-	return unspentTXs
+	return UTXO
+}
+
+// SignTransaction signs inputs of a Transaction
+func (bc *Blockchain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
+	prevTXs := make(map[string]Transaction)
+
+	for _, vin := range tx.Vin {
+		prevTX, err := bc.FindTransaction(vin.Txid)
+		if err != nil {
+			log.Panic(err)
+		}
+		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
+	}
+
+	tx.Sign(privKey, prevTXs)
+}
+
+// FindTransaction finds a transaction by its ID
+func (bc *Blockchain) FindTransaction(ID []byte) (Transaction, error) {
+	bci := bc.Iterator()
+
+	for {
+		block := bci.Next()
+
+		for _, tx := range block.Transactions {
+			if bytes.Compare(tx.ID, ID) == 0 {
+				return *tx, nil
+			}
+		}
+
+		if len(block.PreHash) == 0 {
+			break
+		}
+	}
+
+	return Transaction{}, errors.New("Transaction is not found")
 }
