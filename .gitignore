@@ -9,5 +9,7 @@
 .vscode/
 
 *.db
+*.db.lock
+*.dat
 *.exe
 *.sum
